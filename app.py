@@ -2,7 +2,9 @@ from pathlib import Path
 from uuid import uuid4
 
 from flask import Flask, jsonify, render_template, request, send_from_directory
-from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageEnhance, ImageFile, ImageFilter, ImageOps
+from PIL import UnidentifiedImageError
+from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.utils import secure_filename
 
 
@@ -13,7 +15,8 @@ ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 MAX_IMAGE_SIZE = (2200, 2200)
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 UPLOAD_DIR.mkdir(exist_ok=True)
 PROCESSED_DIR.mkdir(exist_ok=True)
@@ -31,13 +34,10 @@ def clamp_float(value, default, minimum, maximum):
     return max(minimum, min(maximum, number))
 
 
-def save_image(file_storage):
+def make_upload_filename(file_storage):
     original_name = secure_filename(file_storage.filename)
     extension = original_name.rsplit(".", 1)[1].lower()
-    filename = f"{uuid4().hex}.{extension}"
-    upload_path = UPLOAD_DIR / filename
-    file_storage.save(upload_path)
-    return filename
+    return f"{uuid4().hex}.{extension}"
 
 
 def apply_adjustments(image, options):
@@ -76,6 +76,11 @@ def index():
     return render_template("index.html")
 
 
+@app.errorhandler(RequestEntityTooLarge)
+def file_too_large(_error):
+    return jsonify({"error": "The image is too large. Please upload an image under 16 MB."}), 413
+
+
 @app.post("/process")
 def process_image():
     if "image" not in request.files:
@@ -89,10 +94,8 @@ def process_image():
         return jsonify({"error": "Only PNG, JPG, JPEG, and WEBP images are supported."}), 400
 
     try:
-        source_filename = save_image(image_file)
-        source_path = UPLOAD_DIR / source_filename
-
-        with Image.open(source_path) as image:
+        source_filename = make_upload_filename(image_file)
+        with Image.open(image_file.stream) as image:
             processed = apply_adjustments(image, request.form)
 
         output_filename = f"{Path(source_filename).stem}_processed.jpg"
@@ -101,12 +104,17 @@ def process_image():
 
         return jsonify(
             {
-                "original_url": f"/uploads/{source_filename}",
                 "processed_url": f"/processed/{output_filename}",
                 "download_url": f"/download/{output_filename}",
             }
         )
+    except UnidentifiedImageError:
+        return jsonify({"error": "This file is not a readable image. Try a PNG, JPG, JPEG, or WEBP file."}), 400
+    except OSError as error:
+        app.logger.exception("Image file could not be opened or saved")
+        return jsonify({"error": f"The image could not be opened or saved: {error}"}), 400
     except Exception:
+        app.logger.exception("Image processing failed")
         return jsonify({"error": "The image could not be processed. Try another file."}), 500
 
 

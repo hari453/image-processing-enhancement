@@ -65,13 +65,18 @@ form.addEventListener("submit", async (event) => {
       body: new FormData(form),
     });
 
-    const data = await response.json();
+    const contentType = response.headers.get("content-type") || "";
+    const data = contentType.includes("application/json")
+      ? await response.json()
+      : { error: "The server could not process this upload." };
 
     if (!response.ok) {
       throw new Error(data.error || "Processing failed.");
     }
 
-    setImage(originalPreview, data.original_url);
+    if (data.original_url) {
+      setImage(originalPreview, data.original_url);
+    }
     setImage(processedPreview, `${data.processed_url}?t=${Date.now()}`);
     downloadButton.href = data.download_url;
     downloadButton.classList.remove("hidden");
